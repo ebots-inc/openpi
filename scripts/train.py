@@ -1,3 +1,6 @@
+# import os
+# os.environ["JAX_PLATFORM_NAME"] = "cpu"
+
 import dataclasses
 import functools
 import logging

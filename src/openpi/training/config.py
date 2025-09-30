@@ -569,6 +569,38 @@ _CONFIGS = [
         policy_metadata={"reset_pose": [0, -1.5, 1.5, 0, 0, 0]},
     ),
     TrainConfig(
+        name="pi0_aloha_boson",
+        model=pi0_config.Pi0Config(action_horizon=25),
+        data=LeRobotAlohaDataConfig(
+            repo_id="ebots/VLA_datasets/set_1",
+            assets=AssetsConfig(
+                assets_dir="./assets/pi0_aloha_boson",  
+                asset_id="ebots/VLA_datasets/set_1",       
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            default_prompt="Use the left arm to pick up the white cable.",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "task",
+                        }
+                    )
+                ]
+            ),
+        ),
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
         name="pi0_aloha_towel",
         model=pi0_config.Pi0Config(),
         data=LeRobotAlohaDataConfig(
