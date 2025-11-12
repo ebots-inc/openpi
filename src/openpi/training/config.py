@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.ebots_policy as ebots_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -277,6 +278,85 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
         )
 
 
+@dataclasses.dataclass(frozen=True)
+class LeRobotEbotsDataConfig(DataConfigFactory):
+    # Joint/cart dimensions are converted to deltas with respect 
+    # to the current state before passing to the model.
+    # Gripper dimensions will remain in absolute values.
+
+    # If provided, will be injected into the input data if the "prompt" key is not present.
+    default_prompt: str | None = None
+
+    ebots_action_dim: int = 17
+
+    use_right_arm: bool = False
+
+    dual_wrist_camera: bool = False 
+
+    # Optional crop windows for logical views in EbotsInputs.
+    crop_windows: dict[str, ebots_policy.CropSpec] | None = None
+
+    # Repack transforms.
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "images": {
+                            "cam_high": "observation.images.cam_high",
+                            "cam_left_wrist": "observation.images.cam_left_wrist",
+                            "cam_right_wrist": "observation.images.cam_right_wrist",
+                        },
+                        "state": "observation.state",
+                        "actions": "action",
+                        "prompt": "task",
+                    }
+                )
+            ]
+        )
+    )
+                    
+    # Action keys that will be used to read the action sequence from the dataset.
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[ebots_policy.EbotsInputs(
+                ebots_action_dim=self.ebots_action_dim,
+                use_right_arm=self.use_right_arm,
+                dual_wrist_camera=self.dual_wrist_camera,
+                crop_windows=self.crop_windows,
+            )],
+            outputs=[ebots_policy.EbotsOutputs(ebots_action_dim=self.ebots_action_dim)],
+        )
+
+        # Match the mask length to the post-slice action dimension.
+        # 6L + 1L(grip) + 6R + 1R(grip) + 3 stage = 17
+        delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1, 3)
+        if self.ebots_action_dim == 7:
+            # 6 deltas (pose) + 1 absolute (gripper)
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+        elif self.ebots_action_dim == 14:
+            # 6L + 1L(grip) + 6R + 1R(grip) = 14
+            delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
+        
+        data_transforms = data_transforms.push(
+            inputs=[_transforms.DeltaActions(delta_action_mask)],
+            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        )
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+    
 @dataclasses.dataclass(frozen=True)
 class LeRobotLiberoDataConfig(DataConfigFactory):
     """
@@ -569,16 +649,41 @@ _CONFIGS = [
         policy_metadata={"reset_pose": [0, -1.5, 1.5, 0, 0, 0]},
     ),
     TrainConfig(
-        name="pi0_aloha_boson",
+        name="pi0_ebots_full",
         model=pi0_config.Pi0Config(action_horizon=25),
-        data=LeRobotAlohaDataConfig(
+        data=LeRobotEbotsDataConfig(
             repo_id="ebots/VLA_datasets/set_1",
             assets=AssetsConfig(
-                assets_dir="./assets/pi0_aloha_boson",  
+                assets_dir="./assets/pi0_ebots_full",  
                 asset_id="ebots/VLA_datasets/set_1",       
             ),
             base_config=DataConfig(prompt_from_task=True),
             default_prompt="Use the left arm to pick up the white cable.",
+        ),
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi0_ebots_joint",
+        model=pi0_config.Pi0Config(action_horizon=25),
+        data=LeRobotEbotsDataConfig(
+            repo_id="ebots/VLA_datasets/set_1",
+            assets=AssetsConfig(
+                assets_dir="./assets/pi0_ebots_joint",  
+                asset_id="ebots/VLA_datasets/set_1",       
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            default_prompt="Use the left arm to pick up the white cable.",
+            ebots_action_dim=7,
+            dual_wrist_camera=True,
+            use_right_arm=False,
+            crop_windows={
+                "right_wrist_0_rgb": ebots_policy.CropSpec(
+                    y_start=0.5, y_end=0.7,
+                    x_start=0.4, x_end=0.6,
+                ),
+            },
             repack_transforms=_transforms.Group(
                 inputs=[
                     _transforms.RepackTransform(
@@ -586,7 +691,6 @@ _CONFIGS = [
                             "images": {
                                 "cam_high": "observation.images.cam_high",
                                 "cam_left_wrist": "observation.images.cam_left_wrist",
-                                "cam_right_wrist": "observation.images.cam_right_wrist",
                             },
                             "state": "observation.state",
                             "actions": "action",
@@ -598,6 +702,144 @@ _CONFIGS = [
         ),
         batch_size=32,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi0_ebots_cart",
+        model=pi0_config.Pi0Config(action_horizon=25),
+        data=LeRobotEbotsDataConfig(
+            repo_id="ebots/VLA_datasets/set_1",
+            assets=AssetsConfig(
+                assets_dir="./assets/pi0_ebots_cart",  
+                asset_id="ebots/VLA_datasets/set_1",       
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            default_prompt="Use the left arm to pick up the white cable.",
+            ebots_action_dim=7,
+            dual_wrist_camera=True,
+            use_right_arm=False,
+            crop_windows={
+                "right_wrist_0_rgb": ebots_policy.CropSpec(
+                    y_start=0.5, y_end=0.7,
+                    x_start=0.4, x_end=0.6,
+                ),
+            },
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                            },
+                            "state": "observation.cart_state",
+                            "actions": "cart_action",
+                            "prompt": "task",
+                        }
+                    )
+                ]
+            ),
+            action_sequence_keys= ("cart_action",)
+        ),
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_ebots_full",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
+        data=LeRobotEbotsDataConfig(
+            repo_id="ebots/VLA_datasets/set_1",
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_ebots_full",  
+                asset_id="ebots/VLA_datasets/set_1",       
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            default_prompt="Use the left arm to pick up the white cable.",
+        ),
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_ebots_joint",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
+        data=LeRobotEbotsDataConfig(
+            repo_id="ebots/VLA_datasets/set_1",
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_ebots_joint",  
+                asset_id="ebots/VLA_datasets/set_1",       
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            default_prompt="Use the left arm to pick up the white cable.",
+            ebots_action_dim=7,
+            dual_wrist_camera=True,
+            use_right_arm=False,
+            crop_windows={
+                "right_wrist_0_rgb": ebots_policy.CropSpec(
+                    y_start=0.5, y_end=0.7,
+                    x_start=0.4, x_end=0.6,
+                ),
+            },
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "task",
+                        }
+                    )
+                ]
+            ),
+        ),
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_ebots_cart",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
+        data=LeRobotEbotsDataConfig(
+            repo_id="ebots/VLA_datasets/set_1",
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_ebots_cart",  
+                asset_id="ebots/VLA_datasets/set_1",       
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            default_prompt="Use the left arm to pick up the white cable.",
+            ebots_action_dim=7,
+            dual_wrist_camera=True,
+            use_right_arm=False,
+            crop_windows={
+                "right_wrist_0_rgb": ebots_policy.CropSpec(
+                    y_start=0.5, y_end=0.7,
+                    x_start=0.4, x_end=0.6,
+                ),
+            },
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                            },
+                            "state": "observation.cart_state",
+                            "actions": "cart_action",
+                            "prompt": "task",
+                        }
+                    )
+                ]
+            ),
+            action_sequence_keys= ("cart_action",)
+        ),
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=30_000,
     ),
     TrainConfig(
