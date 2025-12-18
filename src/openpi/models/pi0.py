@@ -277,3 +277,238 @@ class Pi0(_model.BaseModel):
 
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
+
+    @override
+    def realtime_sample_actions(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+        prev_chunk: at.Float[at.Array, "b ah ad"] | None = None,
+        inference_delay: int = 0,
+        prefix_attention_horizon: int | None = None,
+        prefix_attention_schedule: str = "exp",
+        max_guidance_weight: float = 5.0,
+        guidance_r: float = 1.0,
+    ) -> _model.Actions:
+        """RTC-guided sampler with optional exact or VJP-based guidance.
+
+        - Uses fixed-step Euler integration via `lax.scan` (JAX-grad compatible).
+        - `guided_step` matches the original RTC formulation (exact gradient).
+        - `guided_step_approximate` uses a FlowPolicy-style VJP denoiser (faster).
+        """
+        observation = _model.preprocess_observation(None, observation, train=False)
+        batch_size = observation.state.shape[0]
+
+        # --- noise init ---
+        H = self.action_horizon
+        if noise is None:
+            noise = jax.random.normal(rng, (batch_size, H, self.action_dim))
+
+        # --- normalize prev_chunk to (B, H, D) ---
+        if prev_chunk is not None:
+            prev_arr = jnp.asarray(prev_chunk)
+            prev_chunk = prev_arr[None, ...] if prev_arr.ndim == 2 else prev_arr
+
+        # --- prefix attention horizon ---
+        if prefix_attention_horizon is None:
+            prefix_attention_horizon = H
+
+        # --- clamp inference delay ---
+        d = int(min(inference_delay, H))
+
+        # --- prefix KV cache ---
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        _, kv_cache = self.PaliGemma.llm(
+            [prefix_tokens, None],
+            mask=prefix_attn_mask,
+            positions=positions,
+        )
+
+        # --- target prefix and weights ---
+        Y = jnp.zeros_like(noise) if prev_chunk is None else prev_chunk
+
+        def make_W(H, d, s, schedule):
+            W = jnp.zeros((H,), dtype=jnp.float32)
+            W = W.at[:d].set(1.0)
+            tail_start = max(0, H - s)
+            W = W.at[tail_start:].set(0.0)
+            if schedule == "exp" and tail_start > d:
+                span = tail_start - d
+                idx = jnp.arange(span)
+                decay = jnp.exp(-3.0 * (idx / jnp.maximum(1.0, span - 1.0)))
+                W = W.at[d:tail_start].set(decay)
+            return W
+
+        W = make_W(H, d, int(prefix_attention_horizon), prefix_attention_schedule)
+        sqrtW = jnp.sqrt(W)[None, :, None]
+
+        # --- time discretization ---
+        num_steps_int = int(num_steps)
+        dt = -1.0 / num_steps_int
+        taus = jnp.linspace(1.0, 0.0, num_steps_int + 1)[:-1]
+
+        # --- integrate A_tau -> A_1 (used by exact loss) ---
+        def integrate_from_with_start(A_init, tau_time):
+            start_idx = jnp.argmin(jnp.abs(taus - tau_time))
+
+            def body(i, x_t):
+                tau = taus[i]
+
+                def do_step(x):
+                    suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+                        observation, x, jnp.broadcast_to(tau, batch_size)
+                    )
+                    suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+                    prefix_attn_mask_local = einops.repeat(
+                        prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1]
+                    )
+                    full_attn_mask = jnp.concatenate(
+                        [prefix_attn_mask_local, suffix_attn_mask], axis=-1
+                    )
+                    positions_local = (
+                        jnp.sum(prefix_mask, axis=-1)[:, None]
+                        + jnp.cumsum(suffix_mask, axis=-1)
+                        - 1
+                    )
+
+                    (_, suffix_out), _ = self.PaliGemma.llm(
+                        [None, suffix_tokens],
+                        mask=full_attn_mask,
+                        positions=positions_local,
+                        kv_cache=kv_cache,
+                        adarms_cond=[None, adarms_cond],
+                    )
+                    v_t = self.action_out_proj(suffix_out[:, -H:])
+                    return x + dt * v_t
+
+                return jax.lax.cond(i >= start_idx, do_step, lambda x: x, x_t)
+
+            return jax.lax.fori_loop(0, num_steps_int, body, A_init)
+
+        # --- exact RTC loss ---
+        def loss_from_A(A_tau, tau_time):
+            A1_hat = integrate_from_with_start(A_tau, tau_time)
+            diff = (A1_hat - Y) * sqrtW
+            return 0.5 * jnp.sum(diff * diff)
+
+        # ============================================================
+        # Exact guidance (slow, reference-correct)
+        # ============================================================
+        def guided_step(x_t, tau):
+            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+                observation, x_t, jnp.broadcast_to(tau, batch_size)
+            )
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            prefix_attn_mask_local = einops.repeat(
+                prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1]
+            )
+            full_attn_mask = jnp.concatenate(
+                [prefix_attn_mask_local, suffix_attn_mask], axis=-1
+            )
+            positions_local = (
+                jnp.sum(prefix_mask, axis=-1)[:, None]
+                + jnp.cumsum(suffix_mask, axis=-1)
+                - 1
+            )
+
+            (_, suffix_out), _ = self.PaliGemma.llm(
+                [None, suffix_tokens],
+                mask=full_attn_mask,
+                positions=positions_local,
+                kv_cache=kv_cache,
+                adarms_cond=[None, adarms_cond],
+            )
+            v_t = self.action_out_proj(suffix_out[:, -H:])
+
+            grad_loss = jax.grad(loss_from_A)(x_t, tau)
+
+            c = jnp.nan_to_num((1.0 - tau) / jnp.maximum(tau, 1e-6),
+                            posinf=max_guidance_weight)
+            s = jnp.minimum(c / (guidance_r ** 2), max_guidance_weight)
+
+            x_next = x_t + dt * (v_t - s * grad_loss)
+            return x_next, None
+
+        # ============================================================
+        # VJP denoiser guidance (fast approximation)
+        # ============================================================
+        def guided_step_approximate(x_t, tau):
+            # forward velocity
+            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+                observation, x_t, jnp.broadcast_to(tau, batch_size)
+            )
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            prefix_attn_mask_local = einops.repeat(
+                prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1]
+            )
+            full_attn_mask = jnp.concatenate(
+                [prefix_attn_mask_local, suffix_attn_mask], axis=-1
+            )
+            positions_local = (
+                jnp.sum(prefix_mask, axis=-1)[:, None]
+                + jnp.cumsum(suffix_mask, axis=-1)
+                - 1
+            )
+
+            (_, suffix_out), _ = self.PaliGemma.llm(
+                [None, suffix_tokens],
+                mask=full_attn_mask,
+                positions=positions_local,
+                kv_cache=kv_cache,
+                adarms_cond=[None, adarms_cond],
+            )
+            v_t = self.action_out_proj(suffix_out[:, -H:])
+
+            # denoiser for VJP
+            def denoiser(x):
+                suffix_tokens_r, suffix_mask_r, suffix_ar_mask_r, adarms_cond_r = self.embed_suffix(
+                    observation, x, jnp.broadcast_to(tau, batch_size)
+                )
+                suffix_attn_mask_r = make_attn_mask(suffix_mask_r, suffix_ar_mask_r)
+                prefix_attn_mask_local_r = einops.repeat(
+                    prefix_mask, "b p -> b s p", s=suffix_tokens_r.shape[1]
+                )
+                full_attn_mask_r = jnp.concatenate(
+                    [prefix_attn_mask_local_r, suffix_attn_mask_r], axis=-1
+                )
+                positions_local_r = (
+                    jnp.sum(prefix_mask, axis=-1)[:, None]
+                    + jnp.cumsum(suffix_mask_r, axis=-1)
+                    - 1
+                )
+
+                (_, suffix_out_r), _ = self.PaliGemma.llm(
+                    [None, suffix_tokens_r],
+                    mask=full_attn_mask_r,
+                    positions=positions_local_r,
+                    kv_cache=kv_cache,
+                    adarms_cond=[None, adarms_cond_r],
+                )
+                v_r = self.action_out_proj(suffix_out_r[:, -H:])
+                return x + (1.0 - tau) * v_r
+
+            A1_hat, vjp_fun = jax.vjp(denoiser, x_t)
+
+            error = (Y - A1_hat) * W[None, :, None]
+            pinv_correction = vjp_fun(error)[0]
+
+            tail_mask = (W > 0.0).astype(jnp.float32)
+            pinv_correction = pinv_correction * tail_mask[None, :, None]
+
+            c = jnp.nan_to_num((1.0 - tau) / jnp.maximum(tau, 1e-6),
+                            posinf=max_guidance_weight)
+            s = jnp.minimum(c / (guidance_r ** 2), max_guidance_weight)
+
+            x_next = x_t + dt * (v_t + s * pinv_correction)
+            return x_next, None
+
+        # --- choose guidance here ---
+        x_0, _ = jax.lax.scan(guided_step_approximate, noise, taus)
+        # x_0, _ = jax.lax.scan(guided_step, noise, taus)
+
+        return x_0
