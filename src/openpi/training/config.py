@@ -652,10 +652,10 @@ _CONFIGS = [
         name="pi0_ebots_full",
         model=pi0_config.Pi0Config(action_horizon=25),
         data=LeRobotEbotsDataConfig(
-            repo_id="ebots/VLA_datasets/set_1",
+            repo_id="EbotsVLA/set_1",  
             assets=AssetsConfig(
                 assets_dir="./assets/pi0_ebots_full",  
-                asset_id="ebots/VLA_datasets/set_1",       
+                asset_id="set_1",       
             ),
             base_config=DataConfig(prompt_from_task=True),
             default_prompt="Use the left arm to pick up the white cable.",
@@ -668,10 +668,10 @@ _CONFIGS = [
         name="pi0_ebots_joint",
         model=pi0_config.Pi0Config(action_horizon=25),
         data=LeRobotEbotsDataConfig(
-            repo_id="ebots/VLA_datasets/set_1",
+            repo_id="EbotsVLA/set_1",  
             assets=AssetsConfig(
                 assets_dir="./assets/pi0_ebots_joint",  
-                asset_id="ebots/VLA_datasets/set_1",       
+                asset_id="set_1",       
             ),
             base_config=DataConfig(prompt_from_task=True),
             default_prompt="Use the left arm to pick up the white cable.",
@@ -708,10 +708,10 @@ _CONFIGS = [
         name="pi0_ebots_cart",
         model=pi0_config.Pi0Config(action_horizon=25),
         data=LeRobotEbotsDataConfig(
-            repo_id="ebots/VLA_datasets/set_1",
+            repo_id="EbotsVLA/set_1",  
             assets=AssetsConfig(
                 assets_dir="./assets/pi0_ebots_cart",  
-                asset_id="ebots/VLA_datasets/set_1",       
+                asset_id="set_1",       
             ),
             base_config=DataConfig(prompt_from_task=True),
             default_prompt="Use the left arm to pick up the white cable.",
@@ -749,10 +749,10 @@ _CONFIGS = [
         name="pi05_ebots_full",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
         data=LeRobotEbotsDataConfig(
-            repo_id="ebots/VLA_datasets/set_1",
+            repo_id="EbotsVLA/set_1",  
             assets=AssetsConfig(
                 assets_dir="./assets/pi05_ebots_full",  
-                asset_id="ebots/VLA_datasets/set_1",       
+                asset_id="set_1",       
             ),
             base_config=DataConfig(prompt_from_task=True),
             default_prompt="Use the left arm to pick up the white cable.",
@@ -765,10 +765,10 @@ _CONFIGS = [
         name="pi05_ebots_joint",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
         data=LeRobotEbotsDataConfig(
-            repo_id="ebots/VLA_datasets/set_1",
+            repo_id="EbotsVLA/set_1",  
             assets=AssetsConfig(
                 assets_dir="./assets/pi05_ebots_joint",  
-                asset_id="ebots/VLA_datasets/set_1",       
+                asset_id="set_1",       
             ),
             base_config=DataConfig(prompt_from_task=True),
             default_prompt="Use the left arm to pick up the white cable.",
@@ -805,10 +805,10 @@ _CONFIGS = [
         name="pi05_ebots_cart",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
         data=LeRobotEbotsDataConfig(
-            repo_id="ebots/VLA_datasets/set_1",
+            repo_id="EbotsVLA/set_1", 
             assets=AssetsConfig(
                 assets_dir="./assets/pi05_ebots_cart",  
-                asset_id="ebots/VLA_datasets/set_1",       
+                asset_id="set_1",       
             ),
             base_config=DataConfig(prompt_from_task=True),
             default_prompt="Use the left arm to pick up the white cable.",
