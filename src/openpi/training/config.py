@@ -852,6 +852,109 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
+        name="pi05_ebots_joint_finetune",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
+        data=LeRobotEbotsDataConfig(
+            repo_id="EbotsVLA/pickUp_jointStates_cartStates_stage_v3Config_97pct_single_threshold",
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_ebots_joint",
+                asset_id="pickUp_jointStates_cartStates_stage_v3Config_97pct_single_threshold",
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            default_prompt="Use the left arm to pick up the white cable.",
+            ebots_action_dim=7,
+            dual_wrist_camera=True,
+            use_right_arm=False,
+            crop_windows={
+                "right_wrist_0_rgb": ebots_policy.CropSpec(
+                    y_start=0.5,
+                    y_end=0.7,
+                    x_start=0.4,
+                    x_end=0.6,
+                ),
+            },
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "task",
+                        }
+                    )
+                ]
+            ),
+        ),    
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/home/gayatrid/checkpoints/pi05_ebots_joint/axisangle_v2_v3_merged_pretraining/24999/params"
+        ),
+        # other config settings
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-5,      # Lower peak LR for stability
+            decay_steps=7500,  # Match fine-tuning duration
+            decay_lr=1e-6,
+        ),
+        num_train_steps=7500,
+    ),
+    TrainConfig(
+        name="pi05_ebots_cart_finetune",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
+        data=LeRobotEbotsDataConfig(
+            repo_id="EbotsVLA/pickUp_jointStates_cartStates_stage_v3Config_97pct_single_threshold",
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_ebots_cart",
+                asset_id="pickUp_jointStates_cartStates_stage_axisAngle_v2_v3_merged",
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            default_prompt="Use the left arm to pick up the white cable.",
+            ebots_action_dim=7,
+            dual_wrist_camera=True,
+            use_right_arm=False,
+            crop_windows={
+                "right_wrist_0_rgb": ebots_policy.CropSpec(
+                    y_start=0.5,
+                    y_end=0.7,
+                    x_start=0.4,
+                    x_end=0.6,
+                ),
+            },
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                            },
+                            "state": "observation.cart_state",
+                            "actions": "cart_action",
+                            "prompt": "task",
+                        }
+                    )
+                ]
+            ),
+            action_sequence_keys=("cart_action",),
+        ),
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/home/gayatrid/checkpoints/pi05_ebots_cart/ebots_checkpoints05_cart_v2_v3_merged/15000/params"
+        ),
+        # other config settings
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-5,      # Lower peak LR for stability
+            decay_steps=7500,  # Match fine-tuning duration
+            decay_lr=1e-6,
+        ),
+        num_train_steps=7500,
+    ),
+    TrainConfig(
         name="pi0_aloha_towel",
         model=pi0_config.Pi0Config(),
         data=LeRobotAlohaDataConfig(
