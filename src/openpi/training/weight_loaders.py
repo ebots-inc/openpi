@@ -1,16 +1,50 @@
 import dataclasses
 import logging
+import math
 import re
 from typing import Protocol, runtime_checkable
 
 import flax.traverse_util
 import numpy as np
+from scipy import ndimage
 
 import openpi.models.model as _model
 import openpi.shared.array_typing as at
 import openpi.shared.download as download
 
 logger = logging.getLogger(__name__)
+
+
+def _interpolate_pos_embedding(
+    loaded: np.ndarray, expected_shape: tuple[int, ...]
+) -> np.ndarray:
+    """Resize learned position embeddings from checkpoint resolution to current resolution.
+
+    Used when fine-tuning at higher image resolution than the checkpoint (e.g. checkpoint
+    at 224x224 with 256 patches, current model at 1120x1120 with 6400 patches).
+
+    This is load-time interpolation for the JAX training path. It is distinct from the
+    PyTorch runtime flag `interpolate_pos_encoding` (see modeling_siglip.py), which
+    interpolates on every forward when input resolution differs from the stored embedding
+    size. The JAX SigLIP module has a fixed pos_embedding shape at init, so we resize
+    the checkpoint once here instead of at forward time.
+    """
+    if loaded.shape == expected_shape:
+        return loaded
+    # Expected (1, num_patches, dim); interpret num_patches as H*W and interpolate 2D.
+    _, seq_old, dim = loaded.shape
+    _, seq_new, _ = expected_shape
+    size_old = int(math.isqrt(seq_old))
+    size_new = int(math.isqrt(seq_new))
+    if size_old * size_old != seq_old or size_new * size_new != seq_new:
+        raise ValueError(
+            f"pos_embedding seq lengths must be perfect squares: got {seq_old} and {seq_new}"
+        )
+    # (1, S, D) -> (1, H, W, D)
+    grid = loaded.reshape(1, size_old, size_old, dim)
+    zoom = (1, size_new / size_old, size_new / size_old, 1)
+    resized = ndimage.zoom(grid, zoom, order=1)
+    return resized.reshape(1, seq_new, dim).astype(loaded.dtype)
 
 
 @runtime_checkable
@@ -91,7 +125,25 @@ def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex:
     result = {}
     for k, v in flat_loaded.items():
         if k in flat_ref:
-            result[k] = v.astype(flat_ref[k].dtype) if v.dtype != flat_ref[k].dtype else v
+            ref = flat_ref[k]
+            ref_shape = ref.shape if hasattr(ref, "shape") else getattr(ref, "shape", None)
+            if (
+                ref_shape is not None
+                and "pos_embedding" in k
+                and hasattr(v, "shape")
+                and v.shape != ref_shape
+                and v.ndim == 3
+                and v.shape[0] == 1
+            ):
+                old_shape = v.shape
+                v = _interpolate_pos_embedding(np.asarray(v), ref_shape)
+                logger.info(
+                    "Interpolated %s from %s to %s for higher resolution",
+                    k,
+                    old_shape,
+                    ref_shape,
+                )
+            result[k] = v.astype(ref.dtype) if hasattr(ref, "dtype") and v.dtype != ref.dtype else v
 
     flat_loaded.clear()
 

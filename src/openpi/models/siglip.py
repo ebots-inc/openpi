@@ -37,14 +37,36 @@ def posemb_sincos_2d(h, w, width, temperature=10_000.0, dtype=jnp.float32):
     return jnp.asarray(pe, dtype)[None, :, :]
 
 
+def _interpolate_posemb_2d(pe: jnp.ndarray, target_h: int, target_w: int) -> jnp.ndarray:
+    """Resize (1, S, D) position embedding to (1, target_h * target_w, D) via 2D interpolation."""
+    _, seq_len, dim = pe.shape
+    size = int(seq_len**0.5)
+    if size * size != seq_len:
+        raise ValueError(f"pos_embedding seq length must be a perfect square, got {seq_len}")
+    grid = pe.reshape(1, size, size, dim)
+    # jax.image.resize expects (batch, h, w, c); method="linear" is bilinear
+    resized = jax.image.resize(
+        grid, (1, target_h, target_w, dim), method="linear", antialias=False
+    )
+    return resized.reshape(1, target_h * target_w, dim).astype(pe.dtype)
+
+
 def get_posemb(self, typ, seqshape, width, name, dtype=jnp.float32):
     if typ == "learn":
-        return self.param(
-            name,
-            nn.initializers.normal(stddev=1 / np.sqrt(width)),
-            (1, np.prod(seqshape), width),
-            dtype,
-        )
+        h, w = seqshape
+        num_patches = np.prod(seqshape)
+        if not self.has_variable("params", name):
+            return self.param(
+                name,
+                nn.initializers.normal(stddev=1 / np.sqrt(width)),
+                (1, num_patches, width),
+                dtype,
+            )
+        pe = self.get_variable("params", name)
+        if pe.shape[1] == num_patches:
+            return pe
+        # Stored pos_embedding has different resolution; interpolate at runtime.
+        return _interpolate_posemb_2d(pe, h, w)
     if typ == "sincos2d":
         return posemb_sincos_2d(*seqshape, width, dtype=dtype)
     raise ValueError(f"Unknown posemb type: {typ}")

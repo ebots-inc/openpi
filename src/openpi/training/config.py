@@ -112,12 +112,13 @@ class ModelTransformFactory(GroupFactory):
     default_prompt: str | None = None
 
     def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
+        img_h, img_w = getattr(model_config, "image_resolution", (224, 224))
         match model_config.model_type:
             case _model.ModelType.PI0:
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
-                        _transforms.ResizeImages(224, 224),
+                        _transforms.ResizeImages(img_h, img_w),
                         _transforms.TokenizePrompt(
                             _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
                         ),
@@ -129,7 +130,7 @@ class ModelTransformFactory(GroupFactory):
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
-                        _transforms.ResizeImages(224, 224),
+                        _transforms.ResizeImages(img_h, img_w),
                         _transforms.TokenizePrompt(
                             _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
                             discrete_state_input=model_config.discrete_state_input,
@@ -149,7 +150,7 @@ class ModelTransformFactory(GroupFactory):
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
-                        _transforms.ResizeImages(224, 224),
+                        _transforms.ResizeImages(img_h, img_w),
                         _transforms.TokenizeFASTInputs(
                             tokenizer_cls(model_config.max_token_len, **tokenizer_kwargs),
                         ),
@@ -898,6 +899,62 @@ _CONFIGS = [
             warmup_steps=500,
             peak_lr=1e-5,      # Lower peak LR for stability
             decay_steps=7500,  # Match fine-tuning duration
+            decay_lr=1e-6,
+        ),
+        num_train_steps=7500,
+    ),
+    # Pi05 fine-tune at 1120x1120 (v3 dataset native resolution); pretrained at 224x224 (v2_v3).
+    # Uses shared norm stats from v2_v3; vision tower interpolates position embeddings for higher res.
+    TrainConfig(
+        name="pi05_ebots_joint_finetune_res",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=25,
+            image_resolution=(320, 320),
+        ),
+        data=LeRobotEbotsDataConfig(
+            repo_id="EbotsVLA/pickUp_jointStates_cartStates_stage_v3Config_97pct_single_threshold",
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_ebots_joint",
+                asset_id="pickUp_jointStates_cartStates_stage_axisAngle_v2_v3_merged",
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            default_prompt="Use the left arm to pick up the white cable.",
+            ebots_action_dim=7,
+            dual_wrist_camera=True,
+            use_right_arm=False,
+            crop_windows={
+                "right_wrist_0_rgb": ebots_policy.CropSpec(
+                    y_start=0.5,
+                    y_end=0.7,
+                    x_start=0.4,
+                    x_end=0.6,
+                ),
+            },
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "task",
+                        }
+                    )
+                ]
+            ),
+        ),
+        batch_size=16,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/home/gayatrid/checkpoints/pi05_ebots_joint/ebots_checkpoints05_joint_v2_v3_ah25/pretrained/20000/params"
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-5,
+            decay_steps=5500,
             decay_lr=1e-6,
         ),
         num_train_steps=7500,

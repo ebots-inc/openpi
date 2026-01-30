@@ -160,7 +160,10 @@ class PI0Pytorch(nn.Module):
 
     def _preprocess_observation(self, observation, *, train=True):
         """Helper method to preprocess observation."""
-        observation = _preprocessing.preprocess_observation_pytorch(observation, train=train)
+        image_resolution = getattr(self.config, "image_resolution", (224, 224))
+        observation = _preprocessing.preprocess_observation_pytorch(
+            observation, train=train, image_resolution=image_resolution
+        )
         return (
             list(observation.images.values()),
             list(observation.image_masks.values()),
@@ -193,11 +196,12 @@ class PI0Pytorch(nn.Module):
         pad_masks = []
         att_masks = []
 
-        # Process images
+        # Process images (use pos embedding interpolation when resolution != 224)
+        interpolate_pos_encoding = getattr(self.config, "image_resolution", (224, 224)) != (224, 224)
         for img, img_mask in zip(images, img_masks, strict=True):
 
-            def image_embed_func(img):
-                return self.paligemma_with_expert.embed_image(img)
+            def image_embed_func(img, interp=interpolate_pos_encoding):
+                return self.paligemma_with_expert.embed_image(img, interpolate_pos_encoding=interp)
 
             img_emb = self._apply_checkpoint(image_embed_func, img)
 
