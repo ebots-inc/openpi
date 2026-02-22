@@ -91,6 +91,10 @@ class DataConfig:
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
 
+    # If true, wrap the LeRobot dataset so each sample gets an "episode_index" key
+    # (from frame index via episode_data_index). Used for per-episode masking (e.g. right wrist).
+    inject_episode_index: bool = False
+
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
@@ -292,7 +296,12 @@ class LeRobotEbotsDataConfig(DataConfigFactory):
 
     use_right_arm: bool = False
 
-    dual_wrist_camera: bool = False 
+    dual_wrist_camera: bool = False
+
+    # If set, right wrist camera is masked (black) for episodes with episode_index < this value.
+    # Requires inject_episode_index and "episode_index" in repack. Used for mixed datasets
+    # (e.g. first 547 episodes without right wrist, rest with right wrist).
+    mask_right_wrist_until_episode: int | None = None
 
     # Optional crop windows for logical views in EbotsInputs.
     crop_windows: dict[str, ebots_policy.CropSpec] | None = None
@@ -328,6 +337,7 @@ class LeRobotEbotsDataConfig(DataConfigFactory):
                 use_right_arm=self.use_right_arm,
                 dual_wrist_camera=self.dual_wrist_camera,
                 crop_windows=self.crop_windows,
+                mask_right_wrist_until_episode=self.mask_right_wrist_until_episode,
             )],
             outputs=[ebots_policy.EbotsOutputs(ebots_action_dim=self.ebots_action_dim)],
         )
@@ -355,9 +365,10 @@ class LeRobotEbotsDataConfig(DataConfigFactory):
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             action_sequence_keys=self.action_sequence_keys,
+            inject_episode_index=self.mask_right_wrist_until_episode is not None,
         )
 
-    
+
 @dataclasses.dataclass(frozen=True)
 class LeRobotLiberoDataConfig(DataConfigFactory):
     """
@@ -814,22 +825,25 @@ _CONFIGS = [
         name="pi05_ebots_cart",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
         data=LeRobotEbotsDataConfig(
-            repo_id="EbotsVLA/set_1", 
+            repo_id="EbotsVLA/pickUp_jointStates_cartStates_stage_v2v3v4rightcam_merged_97pct_224res", 
             assets=AssetsConfig(
                 assets_dir="./assets/pi05_ebots_cart",  
-                asset_id="set_1",       
+                asset_id="pickUp_jointStates_cartStates_stage_v2v3v4rightcam_merged_97pct_224res",       
             ),
             base_config=DataConfig(prompt_from_task=True),
             default_prompt="Use the left arm to pick up the white cable.",
             ebots_action_dim=7,
             dual_wrist_camera=True,
             use_right_arm=False,
-            crop_windows={
-                "right_wrist_0_rgb": ebots_policy.CropSpec(
-                    y_start=0.5, y_end=0.7,
-                    x_start=0.4, x_end=0.6,
-                ),
-            },
+            # Mask right wrist (black) for episodes 0..546; episodes 547+ use full (uncropped) right wrist.
+            mask_right_wrist_until_episode=548,
+            crop_windows=None,
+            # crop_windows={
+            #     "right_wrist_0_rgb": ebots_policy.CropSpec(
+            #         y_start=0.5, y_end=0.7,
+            #         x_start=0.4, x_end=0.6,
+            #     ),
+            # },
             repack_transforms=_transforms.Group(
                 inputs=[
                     _transforms.RepackTransform(
@@ -837,10 +851,12 @@ _CONFIGS = [
                             "images": {
                                 "cam_high": "observation.images.cam_high",
                                 "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
                             },
                             "state": "observation.cart_state",
                             "actions": "cart_action",
                             "prompt": "task",
+                            "episode_index": "episode_index", # not mandatory
                         }
                     )
                 ]
@@ -849,7 +865,7 @@ _CONFIGS = [
         ),
         batch_size=32,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        num_train_steps=30_000,
+        num_train_steps=30000,
     ),
     TrainConfig(
         name="pi05_ebots_joint_finetune",
@@ -906,24 +922,27 @@ _CONFIGS = [
         name="pi05_ebots_cart_finetune",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
         data=LeRobotEbotsDataConfig(
-            repo_id="EbotsVLA/pickUp_jointStates_cartStates_stage_v3Config_97pct_single_threshold",
+            repo_id="EbotsVLA/pickUp_jointStates_cartStates_stage_rightcam_0pct_224res",
             assets=AssetsConfig(
                 assets_dir="./assets/pi05_ebots_cart",
-                asset_id="pickUp_jointStates_cartStates_stage_axisAngle_v2_v3_merged",
+                asset_id="pickUp_jointStates_cartStates_stage_v2v3v4rightcam_merged_97pct_224res",
             ),
             base_config=DataConfig(prompt_from_task=True),
             default_prompt="Use the left arm to pick up the white cable.",
             ebots_action_dim=7,
             dual_wrist_camera=True,
             use_right_arm=False,
-            crop_windows={
-                "right_wrist_0_rgb": ebots_policy.CropSpec(
-                    y_start=0.5,
-                    y_end=0.7,
-                    x_start=0.4,
-                    x_end=0.6,
-                ),
-            },
+            # Mask right wrist (black) for episodes 0..546; episodes 547+ use full (uncropped) right wrist.
+            mask_right_wrist_until_episode=None,
+            crop_windows=None,
+            # crop_windows={
+            #     "right_wrist_0_rgb": ebots_policy.CropSpec(
+            #         y_start=0.5,
+            #         y_end=0.7,
+            #         x_start=0.4,
+            #         x_end=0.6,
+            #     ),
+            # },
             repack_transforms=_transforms.Group(
                 inputs=[
                     _transforms.RepackTransform(
@@ -931,10 +950,12 @@ _CONFIGS = [
                             "images": {
                                 "cam_high": "observation.images.cam_high",
                                 "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
                             },
                             "state": "observation.cart_state",
                             "actions": "cart_action",
                             "prompt": "task",
+                            "episode_index": "episode_index", # not mandatory
                         }
                     )
                 ]
@@ -943,7 +964,7 @@ _CONFIGS = [
         ),
         batch_size=32,
         weight_loader=weight_loaders.CheckpointWeightLoader(
-            "/home/gayatrid/checkpoints/pi05_ebots_cart/ebots_checkpoints05_cart_v2_v3_merged/15000/params"
+            "/home/gayatrid/checkpoints/pi05_ebots_cart/pi05_cart_v2v3v4rightcam_new/29999/params"
         ),
         # other config settings
         lr_schedule=_optimizer.CosineDecaySchedule(

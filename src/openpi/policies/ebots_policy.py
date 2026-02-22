@@ -69,6 +69,10 @@ class EbotsInputs(transforms.DataTransformFn):
     use_right_arm: bool = False
     dual_wrist_camera: bool = False
 
+    # If set, right wrist camera is masked (black + mask False) for episodes with
+    # episode_index < this value. Requires "episode_index" in data and dual_wrist_camera=True.
+    mask_right_wrist_until_episode: int | None = None
+
     # The expected cameras names. All input cameras must be in this set. Missing cameras will be
     # replaced with black images and the corresponding `image_mask` will be set to False.
     EXPECTED_CAMERAS: ClassVar[tuple[str, ...]] = ("cam_high", "cam_low", "cam_left_wrist", "cam_right_wrist")
@@ -132,12 +136,19 @@ class EbotsInputs(transforms.DataTransformFn):
                     f"Unsupported ebots_action_dim for single wrist: {self.ebots_action_dim}"
                 )
         else:
-            # Dual-wrist mode: both logical wrists map to the active arm’s camera.
+            # Dual-wrist mode: left wrist = active arm camera; right wrist = real right camera (unless masking).
             source = "cam_right_wrist" if self.use_right_arm else "cam_left_wrist"
             extra_image_names = {
                 "left_wrist_0_rgb": source,
-                "right_wrist_0_rgb": source,
+                "right_wrist_0_rgb": "cam_right_wrist",  # distinct right camera when not masking
             }
+            # Per-episode masking: mask right wrist (black) for early episodes; use real right wrist for rest.
+            if self.mask_right_wrist_until_episode is not None:
+                ep_idx = data.get("episode_index", 0)
+                ep_idx = int(np.asarray(ep_idx).item()) if hasattr(np.asarray(ep_idx), "item") else int(ep_idx)
+                if ep_idx < self.mask_right_wrist_until_episode:
+                    extra_image_names["right_wrist_0_rgb"] = None  # black + mask False
+                # else: keep "cam_right_wrist" (already set above)
 
         # Add the extra images (or black placeholders).
         for dest, source in extra_image_names.items():

@@ -62,6 +62,57 @@ class TransformedDataset(Dataset[T_co]):
         return len(self._dataset)
 
 
+class EpisodeIndexWrapper(Dataset[dict]):
+    """Wraps a LeRobot-style dataset and adds 'episode_index' to each sample.
+
+    Used when training with per-episode masking (e.g. mask right wrist for first N
+    episodes). Resolves episode index from frame index using the underlying dataset's
+    episode_data_index when available.
+    """
+
+    def __init__(self, dataset: Dataset):
+        self._dataset = dataset
+        self._episode_from: list[int] = []
+        self._episode_to: list[int] = []
+        ep_index = getattr(dataset, "episode_data_index", None)
+        if ep_index is not None and isinstance(ep_index, dict):
+            from_arr = ep_index.get("from")
+            to_arr = ep_index.get("to")
+            if from_arr is not None and to_arr is not None:
+                try:
+                    # Support both lists and tensors (e.g. torch / numpy)
+                    from_list = from_arr.tolist() if hasattr(from_arr, "tolist") else list(from_arr)
+                    to_list = to_arr.tolist() if hasattr(to_arr, "tolist") else list(to_arr)
+                    self._episode_from = [int(x) for x in from_list]
+                    self._episode_to = [int(x) for x in to_list]
+                except (TypeError, ValueError):
+                    pass
+        if not self._episode_from and not self._episode_to:
+            logging.warning(
+                "EpisodeIndexWrapper: dataset has no episode_data_index; "
+                "episode_index will be taken from sample if present, else 0."
+            )
+
+    def _frame_to_episode(self, frame_index: int) -> int:
+        if not self._episode_to:
+            return 0
+        # Find episode i such that episode_from[i] <= frame_index < episode_to[i]
+        for i, to_idx in enumerate(self._episode_to):
+            if frame_index < to_idx:
+                return i
+        return max(0, len(self._episode_to) - 1)
+
+    def __getitem__(self, index: SupportsIndex) -> dict:
+        idx = index.__index__()
+        data = dict(self._dataset[idx])
+        if "episode_index" not in data:
+            data["episode_index"] = np.int32(self._frame_to_episode(idx))
+        return data
+
+    def __len__(self) -> int:
+        return len(self._dataset)
+
+
 class IterableTransformedDataset(IterableDataset[T_co]):
     def __init__(
         self,
@@ -144,6 +195,9 @@ def create_torch_dataset(
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
     )
+
+    if getattr(data_config, "inject_episode_index", False):
+        dataset = EpisodeIndexWrapper(dataset)
 
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
