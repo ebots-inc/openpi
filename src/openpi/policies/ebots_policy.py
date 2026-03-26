@@ -67,7 +67,17 @@ class EbotsInputs(transforms.DataTransformFn):
 
     ebots_action_dim: int = 17
     use_right_arm: bool = False
-    dual_wrist_camera: bool = False
+
+    # Map logical Ebots views ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
+    # to physical camera keys (e.g. "cam_high", "cam_left_wrist"); `None` masks out.
+    camera_sources: Mapping[str, str | None] | None = None
+
+    # Fallback routing when `training/config.py` doesn't provide `camera_sources`.
+    DEFAULT_CAMERA_SOURCES: ClassVar[Mapping[str, str]] = {
+        "base_0_rgb": "cam_high",
+        "left_wrist_0_rgb": "cam_left_wrist",
+        "right_wrist_0_rgb": "cam_right_wrist",
+    }
 
     # The expected cameras names. All input cameras must be in this set. Missing cameras will be
     # replaced with black images and the corresponding `image_mask` will be set to False.
@@ -81,6 +91,8 @@ class EbotsInputs(transforms.DataTransformFn):
 
         in_images = data["images"]
 
+        camera_sources = self.camera_sources or self.DEFAULT_CAMERA_SOURCES
+
         # Validate camera keys.
         unexpected = set(in_images) - set(self.EXPECTED_CAMERAS)
         if unexpected:
@@ -89,11 +101,18 @@ class EbotsInputs(transforms.DataTransformFn):
                 f"got unexpected cameras: {tuple(unexpected)}"
             )
 
-        if "cam_high" not in in_images:
-            raise ValueError("Missing required base camera 'cam_high' in images.")
+        if "base_0_rgb" not in camera_sources:
+            raise ValueError("camera_sources must contain a 'base_0_rgb' entry.")
+        base_source = camera_sources["base_0_rgb"]
+        if base_source is None:
+            raise ValueError("camera_sources['base_0_rgb'] must not be None.")
+        if base_source not in in_images:
+            if base_source == "cam_high":
+                raise ValueError("Missing required base camera 'cam_high' in images.")
+            raise ValueError(f"Missing required base camera '{base_source}' in images.")
 
         # Base image (assumed to always exist).
-        base_image = in_images["cam_high"]
+        base_image = in_images[base_source]
 
         # Optionally crop this base view.
         if self.crop_windows is not None and "base_0_rgb" in self.crop_windows:
@@ -106,41 +125,11 @@ class EbotsInputs(transforms.DataTransformFn):
             "base_0_rgb": np.True_,
         }
 
-        # Determine extra wrist cameras.
-        # Map logical names ("*_wrist_0_rgb") to physical camera keys or None (for masked-out views).
-        extra_image_names: dict[str, str | None] = {}
-
-        if not self.dual_wrist_camera:
-            if self.ebots_action_dim in (14, 17):
-                extra_image_names = {
-                    "left_wrist_0_rgb": "cam_left_wrist",
-                    "right_wrist_0_rgb": "cam_right_wrist",
-                }
-            elif self.ebots_action_dim == 7:
-                if self.use_right_arm:
-                    extra_image_names = {
-                        "left_wrist_0_rgb": None,               # will become black + mask False
-                        "right_wrist_0_rgb": "cam_right_wrist",
-                    }
-                else:
-                    extra_image_names = {
-                        "left_wrist_0_rgb": "cam_left_wrist",
-                        "right_wrist_0_rgb": None,              # will become black + mask False
-                    }
-            else:
-                raise ValueError(
-                    f"Unsupported ebots_action_dim for single wrist: {self.ebots_action_dim}"
-                )
-        else:
-            # Dual-wrist mode: both logical wrists map to the active arm’s camera.
-            source = "cam_right_wrist" if self.use_right_arm else "cam_left_wrist"
-            extra_image_names = {
-                "left_wrist_0_rgb": source,
-                "right_wrist_0_rgb": source,
-            }
-
-        # Add the extra images (or black placeholders).
-        for dest, source in extra_image_names.items():
+        # Add the wrist images (or black placeholders).
+        for dest in ("left_wrist_0_rgb", "right_wrist_0_rgb"):
+            if dest not in camera_sources:
+                raise ValueError(f"camera_sources must contain a '{dest}' entry.")
+            source = camera_sources[dest]
             if source is not None and source in in_images:
                 img = in_images[source]
 

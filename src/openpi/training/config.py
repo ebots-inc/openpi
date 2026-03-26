@@ -292,10 +292,11 @@ class LeRobotEbotsDataConfig(DataConfigFactory):
 
     use_right_arm: bool = False
 
-    dual_wrist_camera: bool = False 
-
     # Optional crop windows for logical views in EbotsInputs.
     crop_windows: dict[str, ebots_policy.CropSpec] | None = None
+
+    # Logical->physical camera routing for EbotsInputs (or `None` to mask).
+    camera_sources: dict[str, str | None] | None = None
 
     # Repack transforms.
     repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
@@ -326,7 +327,7 @@ class LeRobotEbotsDataConfig(DataConfigFactory):
             inputs=[ebots_policy.EbotsInputs(
                 ebots_action_dim=self.ebots_action_dim,
                 use_right_arm=self.use_right_arm,
-                dual_wrist_camera=self.dual_wrist_camera,
+                camera_sources=self.camera_sources,
                 crop_windows=self.crop_windows,
             )],
             outputs=[ebots_policy.EbotsOutputs(ebots_action_dim=self.ebots_action_dim)],
@@ -685,8 +686,12 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             default_prompt="Use the left arm to pick up the white cable.",
             ebots_action_dim=7,
-            dual_wrist_camera=True,
             use_right_arm=False,
+            camera_sources={
+                "base_0_rgb": "cam_high",
+                "left_wrist_0_rgb": "cam_left_wrist",
+                "right_wrist_0_rgb": "cam_left_wrist",
+            },
             crop_windows={
                 "right_wrist_0_rgb": ebots_policy.CropSpec(
                     y_start=0.5, y_end=0.7,
@@ -725,8 +730,12 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             default_prompt="Use the left arm to pick up the white cable.",
             ebots_action_dim=7,
-            dual_wrist_camera=True,
             use_right_arm=False,
+            camera_sources={
+                "base_0_rgb": "cam_high",
+                "left_wrist_0_rgb": "cam_left_wrist",
+                "right_wrist_0_rgb": "cam_left_wrist",
+            },
             crop_windows={
                 "right_wrist_0_rgb": ebots_policy.CropSpec(
                     y_start=0.5, y_end=0.7,
@@ -782,8 +791,12 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             default_prompt="Use the left arm to pick up the white cable.",
             ebots_action_dim=7,
-            dual_wrist_camera=True,
             use_right_arm=False,
+            camera_sources={
+                "base_0_rgb": "cam_high",
+                "left_wrist_0_rgb": "cam_left_wrist",
+                "right_wrist_0_rgb": "cam_left_wrist",
+            },
             crop_windows={
                 "right_wrist_0_rgb": ebots_policy.CropSpec(
                     y_start=0.5, y_end=0.7,
@@ -822,8 +835,12 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             default_prompt="Use the left arm to pick up the white cable.",
             ebots_action_dim=7,
-            dual_wrist_camera=True,
             use_right_arm=False,
+            camera_sources={
+                "base_0_rgb": "cam_high",
+                "left_wrist_0_rgb": "cam_left_wrist",
+                "right_wrist_0_rgb": "cam_left_wrist",
+            },
             crop_windows={
                 "right_wrist_0_rgb": ebots_policy.CropSpec(
                     y_start=0.5, y_end=0.7,
@@ -863,8 +880,12 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             default_prompt="Use the left arm to pick up the white cable.",
             ebots_action_dim=7,
-            dual_wrist_camera=True,
             use_right_arm=False,
+            camera_sources={
+                "base_0_rgb": "cam_high",
+                "left_wrist_0_rgb": "cam_left_wrist",
+                "right_wrist_0_rgb": "cam_left_wrist",
+            },
             crop_windows={
                 "right_wrist_0_rgb": ebots_policy.CropSpec(
                     y_start=0.5,
@@ -914,8 +935,12 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             default_prompt="Use the left arm to pick up the white cable.",
             ebots_action_dim=7,
-            dual_wrist_camera=True,
             use_right_arm=False,
+            camera_sources={
+                "base_0_rgb": "cam_high",
+                "left_wrist_0_rgb": "cam_left_wrist",
+                "right_wrist_0_rgb": "cam_left_wrist",
+            },
             crop_windows={
                 "right_wrist_0_rgb": ebots_policy.CropSpec(
                     y_start=0.5,
