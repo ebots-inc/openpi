@@ -86,6 +86,9 @@ class EbotsInputs(transforms.DataTransformFn):
     # Optional crop windows per logical view name (e.g., "right_wrist_0_rgb")
     crop_windows: Mapping[str, CropSpec] | None = None
 
+    # Optional per-view rotation k for `np.rot90`.
+    camera_rot90_ks: Mapping[str, int] | None = None
+
     def __call__(self, data: dict) -> dict:
         data = self.convert_images(data)
 
@@ -118,6 +121,10 @@ class EbotsInputs(transforms.DataTransformFn):
         if self.crop_windows is not None and "base_0_rgb" in self.crop_windows:
             base_image = self.crop_windows["base_0_rgb"].apply(base_image)
 
+        # Rotate base view if configured.
+        if self.camera_rot90_ks is not None and "base_0_rgb" in self.camera_rot90_ks:
+            base_image = np.rot90(base_image, self.camera_rot90_ks["base_0_rgb"])
+
         images = {
             "base_0_rgb": base_image,
         }
@@ -133,14 +140,21 @@ class EbotsInputs(transforms.DataTransformFn):
             if source is not None and source in in_images:
                 img = in_images[source]
 
-                # Optionally crop this logical view.
+                # Crop this logical view if configured.
                 if self.crop_windows is not None and dest in self.crop_windows:
                     img = self.crop_windows[dest].apply(img)
+
+                # Rotate this logical view if configured.
+                if self.camera_rot90_ks is not None and dest in self.camera_rot90_ks:
+                    img = np.rot90(img, self.camera_rot90_ks[dest])
 
                 images[dest] = img
                 image_masks[dest] = np.True_
             else:
-                images[dest] = np.zeros_like(base_image)
+                placeholder = np.zeros_like(base_image)
+                if self.camera_rot90_ks is not None and dest in self.camera_rot90_ks:
+                    placeholder = np.rot90(placeholder, self.camera_rot90_ks[dest])
+                images[dest] = placeholder
                 image_masks[dest] = np.False_
 
         # Decide which slice of the 17-D state/actions to use.

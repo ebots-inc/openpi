@@ -298,6 +298,10 @@ class LeRobotEbotsDataConfig(DataConfigFactory):
     # Logical->physical camera routing for EbotsInputs (or `None` to mask).
     camera_sources: dict[str, str | None] | None = None
 
+    # Optional per-view rotation k for `np.rot90`.
+    # Keys: "base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb".
+    camera_rot90_ks: dict[str, int] | None = None
+
     # Repack transforms.
     repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
         default=_transforms.Group(
@@ -329,6 +333,7 @@ class LeRobotEbotsDataConfig(DataConfigFactory):
                 use_right_arm=self.use_right_arm,
                 camera_sources=self.camera_sources,
                 crop_windows=self.crop_windows,
+                camera_rot90_ks=self.camera_rot90_ks,
             )],
             outputs=[ebots_policy.EbotsOutputs(ebots_action_dim=self.ebots_action_dim)],
         )
