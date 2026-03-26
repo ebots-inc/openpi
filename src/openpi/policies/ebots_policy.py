@@ -13,7 +13,7 @@ def make_ebots_example() -> dict:
         "state": np.ones((17,)),
         "images": {
             "cam_high": np.random.randint(256, size=(3, 224, 224), dtype=np.uint8),
-            "cam_low": np.random.randint(256, size=(3, 224, 224), dtype=np.uint8),
+            "cam_side": np.random.randint(256, size=(3, 224, 224), dtype=np.uint8),
             "cam_left_wrist": np.random.randint(256, size=(3, 224, 224), dtype=np.uint8),
             "cam_right_wrist": np.random.randint(256, size=(3, 224, 224), dtype=np.uint8),
         },
@@ -81,7 +81,7 @@ class EbotsInputs(transforms.DataTransformFn):
 
     # The expected cameras names. All input cameras must be in this set. Missing cameras will be
     # replaced with black images and the corresponding `image_mask` will be set to False.
-    EXPECTED_CAMERAS: ClassVar[tuple[str, ...]] = ("cam_high", "cam_low", "cam_left_wrist", "cam_right_wrist")
+    EXPECTED_CAMERAS: ClassVar[tuple[str, ...]] = ("cam_high", "cam_side", "cam_left_wrist", "cam_right_wrist")
 
     # Optional crop windows per logical view name (e.g., "right_wrist_0_rgb")
     crop_windows: Mapping[str, CropSpec] | None = None
@@ -201,10 +201,10 @@ class EbotsInputs(transforms.DataTransformFn):
             
             print("\n[DEBUG] State:\n", state)
             if "actions" in inputs:
-                print("\n[DEBUG] Actions:\n", inputs["actions"])
+                print("\n[DEBUG] Actions:\n", inputs["actions"], flush=True)
             
             if "prompt" in inputs:
-                print("\n[DEBUG] Prompt:\n", inputs["prompt"])
+                print("\n[DEBUG] Prompt:\n", inputs["prompt"], flush=True)
             
             plt.show(block=True)
 

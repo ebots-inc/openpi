@@ -985,6 +985,91 @@ _CONFIGS = [
         num_train_steps=7500,
     ),
     TrainConfig(
+        name="pi05_ebots_joint_cable_harness",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
+        data=LeRobotEbotsDataConfig(
+            repo_id="EbotsVLA/set_1",  
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_ebots_joint_cable_harness",  
+                asset_id="EbotsVLA/set_1",       
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            default_prompt="Pick the Ethernet cable and insert the plug into the router port.",
+            ebots_action_dim=7,
+            use_right_arm=False,
+            camera_sources={
+                "base_0_rgb": "cam_high",
+                "left_wrist_0_rgb": "cam_left_wrist",
+                "right_wrist_0_rgb": "cam_side",
+            },
+            camera_rot90_ks={   
+                "left_wrist_0_rgb": 2,
+            },
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_side": "observation.images.cam_side",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "task",
+                        }
+                    )
+                ]
+            ),
+        ),
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_ebots_cart_cable_harness",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
+        data=LeRobotEbotsDataConfig(
+            repo_id="EbotsVLA/set_1", 
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_ebots_cart_cable_harness",  
+                asset_id="EbotsVLA/set_1",       
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            default_prompt="Pick the Ethernet cable and insert the plug into the router port.",
+            ebots_action_dim=7,
+            use_right_arm=False,
+            camera_sources={
+                "base_0_rgb": "cam_high",
+                "left_wrist_0_rgb": "cam_left_wrist",
+                "right_wrist_0_rgb": "cam_side",
+            },
+            camera_rot90_ks={   
+                "left_wrist_0_rgb": 2,
+            },
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_side": "observation.images.cam_side",
+                            },
+                            "state": "observation.cart_state",
+                            "actions": "cart_action",
+                            "prompt": "task",
+                        }
+                    )
+                ]
+            ),
+            action_sequence_keys= ("cart_action",)
+        ),
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
         name="pi0_aloha_towel",
         model=pi0_config.Pi0Config(),
         data=LeRobotAlohaDataConfig(
