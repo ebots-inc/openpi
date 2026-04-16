@@ -127,6 +127,42 @@ class FakeDataset(Dataset):
         return self._num_samples
 
 
+def _normalize_task_index_filter(task_index_filter: int | Sequence[int]) -> tuple[int, ...]:
+    task_indices = (task_index_filter,) if isinstance(task_index_filter, int) else tuple(task_index_filter)
+    if not task_indices:
+        raise ValueError("task_index_filter must contain at least one task index.")
+    return task_indices
+
+
+def _find_matching_task_indices(dataset: Dataset, task_index_filter_set: set[int]) -> list[int]:
+    hf_dataset = getattr(dataset, "hf_dataset", None)
+    if hf_dataset is not None:
+        task_index_column = hf_dataset["task_index"]
+        return [i for i, task_index in enumerate(task_index_column) if int(task_index) in task_index_filter_set]
+
+    logging.info("LeRobot dataset does not expose hf_dataset; falling back to slow task_index scan.")
+    return [i for i in range(len(dataset)) if int(dataset[i]["task_index"]) in task_index_filter_set]
+
+
+def _filter_lerobot_dataset_by_task_index(
+    dataset: Dataset, repo_id: str, task_index_filter: int | Sequence[int]
+) -> torch.utils.data.Subset:
+    task_indices = _normalize_task_index_filter(task_index_filter)
+    task_index_filter_set = set(task_indices)
+    keep_indices = _find_matching_task_indices(dataset, task_index_filter_set)
+
+    if not keep_indices:
+        raise ValueError(f"No samples found for task_index in {task_indices} in dataset {repo_id}.")
+
+    logging.info(
+        "Filtering LeRobot dataset to task_index in %s: keeping %s/%s samples",
+        task_indices,
+        len(keep_indices),
+        len(dataset),
+    )
+    return torch.utils.data.Subset(dataset, keep_indices)
+
+
 def create_torch_dataset(
     data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
 ) -> Dataset:
@@ -144,6 +180,9 @@ def create_torch_dataset(
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
     )
+
+    if data_config.task_index_filter is not None:
+        dataset = _filter_lerobot_dataset_by_task_index(dataset, repo_id, data_config.task_index_filter)
 
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])

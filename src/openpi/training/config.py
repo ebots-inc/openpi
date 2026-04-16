@@ -90,6 +90,8 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+    # Only used for LeRobot datasets. If provided, only samples whose task_index matches one of these values will be loaded.
+    task_index_filter: int | Sequence[int] | None = None
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
