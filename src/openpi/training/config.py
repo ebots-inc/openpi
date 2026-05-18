@@ -4,6 +4,7 @@ import abc
 from collections.abc import Sequence
 import dataclasses
 import difflib
+import json
 import logging
 import pathlib
 from typing import Any, Literal, Protocol, TypeAlias
@@ -33,6 +34,30 @@ import openpi.transforms as _transforms
 ModelType: TypeAlias = _model.ModelType
 # Work around a tyro issue with using nnx.filterlib.Filter directly.
 Filter: TypeAlias = nnx.filterlib.Filter
+
+
+def _openpi_repo_root() -> pathlib.Path | None:
+    """Return the OpenPI repo root (contains ``pyproject.toml`` and ``src/openpi``), or None if unknown."""
+    for parent in pathlib.Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").is_file() and (parent / "src" / "openpi").is_dir():
+            return parent
+    return None
+
+
+def resolve_openpi_config_path(path: str | pathlib.Path) -> pathlib.Path:
+    """Resolve paths from TrainConfig / AssetsConfig (e.g. ``./assets``, ``./checkpoints``).
+
+    Relative paths are anchored at the OpenPI repository root when it can be detected, so
+    ``python ~/openpi/scripts/train.py ...`` works from any current working directory.
+    Absolute paths are returned resolved unchanged.
+    """
+    p = pathlib.Path(path).expanduser()
+    if p.is_absolute():
+        return p.resolve()
+    root = _openpi_repo_root()
+    if root is not None:
+        return (root / p).resolve()
+    return (pathlib.Path.cwd() / p).resolve()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -90,8 +115,9 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
-    # Only used for LeRobot datasets. If provided, only samples whose task_index matches one of these values will be loaded.
-    task_index_filter: int | Sequence[int] | None = None
+
+    # If set, only these episode indices are loaded from the LeRobot dataset (see `LeRobotDataset(..., episodes=...)`).
+    lerobot_episodes: tuple[int, ...] | None = None
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -194,7 +220,8 @@ class DataConfigFactory(abc.ABC):
         if asset_id is None:
             return None
         try:
-            data_assets_dir = str(assets_dir / asset_id)
+            base = resolve_openpi_config_path(pathlib.Path(str(assets_dir)))
+            data_assets_dir = str(base / asset_id)
             norm_stats = _normalize.load(_download.maybe_download(data_assets_dir))
             logging.info(f"Loaded norm stats from {data_assets_dir}")
             return norm_stats
@@ -327,8 +354,21 @@ class LeRobotEbotsDataConfig(DataConfigFactory):
     # Action keys that will be used to read the action sequence from the dataset.
     action_sequence_keys: Sequence[str] = ("action",)
 
+    # If set, only these LeRobot episode indices are used. Ignored when `lerobot_episodes_json` is set.
+    lerobot_episodes: tuple[int, ...] | None = None
+
+    # Optional JSON file (path relative to OpenPI repo root or absolute) containing a JSON array of episode
+    # indices, e.g. [0, 2, 5]. When set, overrides `lerobot_episodes` for stage-2 / task-focused finetuning.
+    lerobot_episodes_json: str | None = None
+
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        lerobot_episodes: tuple[int, ...] | None = self.lerobot_episodes
+        if self.lerobot_episodes_json is not None:
+            path = resolve_openpi_config_path(self.lerobot_episodes_json)
+            loaded = json.loads(path.read_text())
+            lerobot_episodes = tuple(sorted(int(x) for x in loaded))
+
         data_transforms = _transforms.Group(
             inputs=[ebots_policy.EbotsInputs(
                 ebots_action_dim=self.ebots_action_dim,
@@ -363,6 +403,7 @@ class LeRobotEbotsDataConfig(DataConfigFactory):
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             action_sequence_keys=self.action_sequence_keys,
+            lerobot_episodes=lerobot_episodes,
         )
 
     
@@ -625,14 +666,14 @@ class TrainConfig:
     @property
     def assets_dirs(self) -> pathlib.Path:
         """Get the assets directory for this config."""
-        return (pathlib.Path(self.assets_base_dir) / self.name).resolve()
+        return resolve_openpi_config_path(pathlib.Path(self.assets_base_dir) / self.name)
 
     @property
     def checkpoint_dir(self) -> pathlib.Path:
         """Get the checkpoint directory for this config."""
         if not self.exp_name:
             raise ValueError("--exp_name must be set")
-        return (pathlib.Path(self.checkpoint_base_dir) / self.name / self.exp_name).resolve()
+        return resolve_openpi_config_path(pathlib.Path(self.checkpoint_base_dir) / self.name / self.exp_name)
 
     @property
     def trainable_filter(self) -> nnx.filterlib.Filter:
@@ -1032,13 +1073,13 @@ _CONFIGS = [
         name="pi05_ebots_cart_cable_harness",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
         data=LeRobotEbotsDataConfig(
-            repo_id="EbotsVLA/set_1", 
+            repo_id="/home/gayatri-davuluri/datasets/cableHarness_v1insertion_v2v3_v3rec123_v3syn_pick_insertion_upd_prompts_Config", 
             assets=AssetsConfig(
                 assets_dir="./assets/pi05_ebots_cart_cable_harness",  
-                asset_id="EbotsVLA/set_1",       
+                asset_id="cableHarness_v1insertion_v2v3_v3rec123_v3syn_pick_insertion_upd_prompts_Config",       
             ),
             base_config=DataConfig(prompt_from_task=True),
-            default_prompt="Pick the Ethernet cable and insert the plug into the router port.",
+            default_prompt="Reach the Ethernet plug, grasp it, align it with the router port, and insert it.",
             ebots_action_dim=7,
             use_right_arm=False,
             camera_sources={
@@ -1070,6 +1111,171 @@ _CONFIGS = [
         batch_size=32,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=30_000,
+    ),
+     TrainConfig(
+        name="pi05_ebots_cart_cable_harness_finetune",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
+        data=LeRobotEbotsDataConfig(
+            repo_id="/home/gayatri-davuluri/datasets/cableHarness_v2v3_v3rec13_upd_prompts_Config",
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_ebots_cart_cable_harness",
+                asset_id="cableHarness_v2v3_v3rec13_upd_prompts_Config",
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            default_prompt= None, # "Reach the Ethernet plug, grasp it, align it with the router port, and insert it.",
+            ebots_action_dim=7,
+            use_right_arm=False,
+            camera_sources={
+                "base_0_rgb": "cam_high",
+                "left_wrist_0_rgb": "cam_left_wrist",
+                "right_wrist_0_rgb": "cam_side",
+            },
+            camera_rot90_ks={
+                "left_wrist_0_rgb": 2,
+            },
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_side": "observation.images.cam_side",
+                            },
+                            "state": "observation.cart_state",
+                            "actions": "cart_action",
+                            "prompt": "task",
+                        }
+                    )
+                ]
+            ),
+            action_sequence_keys=("cart_action",),
+        ),
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/home/gayatri-davuluri/openpi/checkpoints/pi05_ebots_cart_cable_harness/pi05_cart_all_real_plus_syn_30k/29999/params"
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-5,
+            decay_steps=7500,
+            decay_lr=1e-6,
+        ),
+        num_train_steps=7500,
+    ),
+    # Stage 2: insertion-only finetune on real multi-cam data 
+    # cropped window
+    TrainConfig(
+        name="pi05_ebots_cart_cable_harness_finetune_insertion",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
+        data=LeRobotEbotsDataConfig(
+            repo_id="/home/gayatrid/.cache/huggingface/lerobot/EbotsVLA/cableHarness_v2v3_v3rec13_upd_prompts_Config",
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_ebots_cart_cable_harness",
+                asset_id="cableHarness_v2v3_v3rec13_upd_prompts_Config",
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            default_prompt=None,
+            ebots_action_dim=7,
+            use_right_arm=False,
+            camera_sources={
+                "base_0_rgb": "cam_high",
+                "left_wrist_0_rgb": "cam_left_wrist",
+                "right_wrist_0_rgb": "cam_side",
+            },
+            camera_rot90_ks={
+                "left_wrist_0_rgb": 2,
+            },
+            crop_windows={
+                "right_wrist_0_rgb": ebots_policy.CropSpec(
+                    y_start=0.20,
+                    y_end=0.70,
+                    x_start=0.03,
+                    x_end=0.85,
+                ),
+            },
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_side": "observation.images.cam_side",
+                            },
+                            "state": "observation.cart_state",
+                            "actions": "cart_action",
+                            "prompt": "task",
+                        }
+                    )
+                ]
+            ),
+            action_sequence_keys=("cart_action",),
+            lerobot_episodes_json="./assets/pi05_ebots_cart_cable_harness/cableHarness_v2v3_v3rec13_insertion_episodes.json",
+        ),
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/home/gayatrid/openpi/checkpoints/pi05_ebots_cart_cable_harness/finetuned_models/pi05_cart_all_real_finetune_on_30kboth_real_norm_stats_upd_prompts/7499/params"
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=300,
+            peak_lr=5e-6,
+            decay_steps=3500,
+            decay_lr=5e-7,
+        ),
+        num_train_steps=3500,
+    ),
+    TrainConfig(
+        name="pi05_ebots_cart_cable_harness_finetune_insertiononly_norm_stats_on_real7499",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
+        data=LeRobotEbotsDataConfig(
+            repo_id="/home/gayatri-davuluri/datasets/cableHarness_v2v3_v3rec13_upd_prompts_Config",
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_ebots_cart_cable_harness_finetune_insertiononly_norm_stats_on_real7499",
+                asset_id="cableHarness_v1insertion_v2v3_v3rec123_insertiononly_stats",
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            default_prompt=None,
+            ebots_action_dim=7,
+            use_right_arm=False,
+            camera_sources={
+                "base_0_rgb": "cam_high",
+                "left_wrist_0_rgb": "cam_left_wrist",
+                "right_wrist_0_rgb": "cam_side",
+            },
+            camera_rot90_ks={
+                "left_wrist_0_rgb": 2,
+            },
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_side": "observation.images.cam_side",
+                            },
+                            "state": "observation.cart_state",
+                            "actions": "cart_action",
+                            "prompt": "task",
+                        }
+                    )
+                ]
+            ),
+            action_sequence_keys=("cart_action",),
+            lerobot_episodes_json="./assets/pi05_ebots_cart_cable_harness/cableHarness_v2v3_v3rec13_insertion_episodes.json",
+        ),
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/home/gayatri-davuluri/openpi/checkpoints/pi05_ebots_cart_cable_harness_finetune/pi05_cart_all_real_finetune_30kboth_real_norm_stats_upd_prompts/7499/params"
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=300,
+            peak_lr=5e-6,
+            decay_steps=3500,
+            decay_lr=5e-7,
+        ),
+        num_train_steps=3500,
     ),
     TrainConfig(
         name="pi0_aloha_towel",
