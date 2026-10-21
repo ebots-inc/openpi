@@ -1072,6 +1072,46 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
+            name="pi05_ebots_cart_fiber_optic",
+            model=pi0_config.Pi0Config(pi05=True, action_horizon=25),
+            data=LeRobotEbotsDataConfig(
+                repo_id="EbotsVLA/set_1", 
+                assets=AssetsConfig(
+                    assets_dir="./assets/pi05_ebots_cart_fiber_optic",  
+                    asset_id="EbotsVLA/set_1",       
+                ),
+                base_config=DataConfig(prompt_from_task=True),
+                default_prompt="Insert the fiber-optic plug into the port.",
+                ebots_action_dim=7,
+                use_right_arm=False,
+                camera_sources={
+                    "base_0_rgb": "cam_high",
+                    "left_wrist_0_rgb": "cam_left_wrist",
+                    "right_wrist_0_rgb": "cam_right_wrist",
+                },
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high": "observation.images.cam_high",
+                                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                                },
+                                "state": "observation.cart_state",
+                                "actions": "cart_action",
+                                "prompt": "task",
+                            }
+                        )
+                    ]
+                ),
+                action_sequence_keys= ("cart_action",)
+            ),
+            batch_size=32,
+            weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+            num_train_steps=30_000,
+        ),
+        TrainConfig(
         name="pi0_aloha_towel",
         model=pi0_config.Pi0Config(),
         data=LeRobotAlohaDataConfig(
